@@ -21,6 +21,7 @@
 #include <fstream>
 #include <unordered_map>
 #include <time.h> 
+#include <random>
 #include "ns3/core-module.h"
 #include "ns3/qbb-helper.h"
 #include "ns3/point-to-point-helper.h"
@@ -219,7 +220,7 @@ void monitor_buffer(FILE* qlen_output, NodeContainer *n){
 	if (Simulator::Now().GetTimeStep() < qlen_mon_end)
 		Simulator::Schedule(NanoSeconds(qlen_mon_interval), &monitor_buffer, qlen_output, n);
 }
-
+// 计算交换机到每个host的路径
 void CalculateRoute(Ptr<Node> host){
 	// queue for the BFS.
 	vector<Ptr<Node> > q;
@@ -287,15 +288,23 @@ void SetRoutingEntries(){
 			Ipv4Address dstAddr = dst->GetObject<Ipv4>()->GetAddress(1, 0).GetLocal();
 			// The next hops towards the dst.
 			vector<Ptr<Node> > nexts = j->second;
+			// cout << nexts.size() << endl;
+			// cout << "node " << node->GetId() << " to " << dst->GetId() << " : ";
 			for (int k = 0; k < (int)nexts.size(); k++){
 				Ptr<Node> next = nexts[k];
+				// cout << next->GetId() << " ";
 				uint32_t interface = nbr2if[node][next].idx;
-				if (node->GetNodeType() == 1)
+				if (node->GetNodeType() == 1){
 					DynamicCast<SwitchNode>(node)->AddTableEntry(dstAddr, interface);
-				else{
+					// if (interface == 0){
+					// 	cout << "Switch " << node->GetId() << " add table entry to " << dst->GetId() << " via " << interface << endl;
+					// }
+				}
+					else{
 					node->GetObject<RdmaDriver>()->m_rdma->AddTableEntry(dstAddr, interface);
 				}
 			}
+			// cout << endl;
 		}
 	}
 }
@@ -335,6 +344,7 @@ uint64_t get_nic_rate(NodeContainer &n){
 
 int main(int argc, char *argv[])
 {
+	srand(time(NULL));
 	clock_t begint, endt;
 	begint = clock();
 #ifndef PGO_TRAINING
@@ -663,6 +673,7 @@ int main(int argc, char *argv[])
 	}
 
 
+
 	bool dynamicth = use_dynamic_pfc_threshold;
 
 	Config::SetDefault("ns3::QbbNetDevice::PauseTime", UintegerValue(pause_time));
@@ -694,12 +705,18 @@ int main(int argc, char *argv[])
 	flowf.open(flow_file.c_str());
 	tracef.open(trace_file.c_str());
 	uint32_t node_num, switch_num, link_num, trace_num;
+	uint32_t a, p, h, g;
 	topof >> node_num >> switch_num >> link_num;
+	topof >> a >> p >> h >> g;
 	flowf >> flow_num;
 	tracef >> trace_num;
 
 
+
 	//n.Create(node_num);
+	std::cout <<"node_num:" << node_num << std::endl;
+	std::cout <<"switch_num:" << switch_num << std::endl;
+	std::cout <<"link_num:" << link_num << std::endl;
 	std::vector<uint32_t> node_type(node_num, 0);
 	for (uint32_t i = 0; i < switch_num; i++)
 	{
@@ -707,16 +724,20 @@ int main(int argc, char *argv[])
 		topof >> sid;
 		node_type[sid] = 1;
 	}
+
+	
 	for (uint32_t i = 0; i < node_num; i++){
-		if (node_type[i] == 0)
+		if (node_type[i] == 0){
 			n.Add(CreateObject<Node>());
+			// cout << "created a host "<< endl;
+		}
 		else{
 			Ptr<SwitchNode> sw = CreateObject<SwitchNode>();
+			sw->SetSwitchId(i - (node_num - switch_num));
 			n.Add(sw);
 			sw->SetAttribute("EcnEnabled", BooleanValue(enable_qcn));
 		}
 	}
-
 
 	NS_LOG_INFO("Create nodes.");
 
@@ -734,7 +755,7 @@ int main(int argc, char *argv[])
 	}
 
 	NS_LOG_INFO("Create channels.");
-
+	printf("Created \n");
 	//
 	// Explicitly create the channels required by the topology.
 	//
@@ -819,6 +840,10 @@ int main(int argc, char *argv[])
 	nic_rate = get_nic_rate(n);
 
 	// config switch
+	// SwitchNode::a = a;
+	// SwitchNode::p = p;
+	// SwitchNode::h = h;
+	// SwitchNode::g = g;
 	for (uint32_t i = 0; i < node_num; i++){
 		if (n.Get(i)->GetNodeType() == 1){ // is switch
 			Ptr<SwitchNode> sw = DynamicCast<SwitchNode>(n.Get(i));
@@ -954,25 +979,34 @@ int main(int argc, char *argv[])
 		}
 		trace_nodes = NodeContainer(trace_nodes, n.Get(nid));
 	}
+	// cout << "test" << endl;
 
 	FILE *trace_output = fopen(trace_output_file.c_str(), "w");
 	if (enable_trace)
 		qbb.EnableTracing(trace_output, trace_nodes);
+	// cout << "test2" << endl;
 
 	// dump link speed to trace file
 	{
 		SimSetting sim_setting;
 		for (auto i: nbr2if){
 			for (auto j : i.second){
+				// cout << "node " << i.first->GetId() << " port " << j.second.idx << " speed " << DynamicCast<QbbNetDevice>(i.first->GetDevice(j.second.idx))->GetDataRate().GetBitRate() << endl;
 				uint16_t node = i.first->GetId();
 				uint8_t intf = j.second.idx;
 				uint64_t bps = DynamicCast<QbbNetDevice>(i.first->GetDevice(j.second.idx))->GetDataRate().GetBitRate();
 				sim_setting.port_speed[node][intf] = bps;
 			}
 		}
+		// cout << "test3" << endl;
 		sim_setting.win = maxBdp;
-		sim_setting.Serialize(trace_output);
+		// cout << "test4" << endl;
+		// if (enable_trace)
+			sim_setting.Serialize(trace_output);
+		// cout << "test5" << endl;
+
 	}
+	// cout << "test" << endl;
 
 	Ipv4GlobalRoutingHelper::PopulateRoutingTables();
 
