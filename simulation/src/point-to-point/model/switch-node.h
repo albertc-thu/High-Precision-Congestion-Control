@@ -23,7 +23,7 @@ class SwitchNode : public Node{
 	// monitor of PFC
 	uint32_t m_bytes[pCnt][pCnt][qCnt]; // m_bytes[inDev][outDev][qidx] is the bytes from inDev enqueued for outDev at qidx
 	uint32_t output_q_bytes[pCnt]; // output queue bytes
-	uint32_t output_vq_bytes[pCnt][pCnt]; // output virtual queue bytes
+	uint32_t output_vq_bytes[pCnt][2]; // output virtual queue bytes, 一个作为minimal queue，一个作为non-minimal queue
 
 	uint64_t m_txBytes[pCnt]; // counter of tx bytes
 

@@ -183,25 +183,24 @@ bool SwitchNode::enable_VLB(Ptr<const Packet>p, CustomHeader &ch, uint32_t dip, 
 	// 这里需要模拟一个virtual channel
 	// 随机选一个中间group, 本group内经过的ToR也确定下来: Ra
 	// 然后去测q_vc， 也就是Rs前往Ra的队列中去往Gi的包的数量
-	// int idx_direct = GetOutDev(p, ch);
-	// int idx_indirect = GetOutDevVir(p, ch, v_dip);
-	// int Hm = GetHopCount(ch.sip, dip) - 1;
-	// int Hnm = GetHopCount(ch.sip, v_dip) - 2 + GetHopCount(v_dip, dip) - 1;
-	// if (idx_direct != idx_indirect){
-	// 	int qm = output_q_bytes[idx_direct];
-	// 	int qnm = output_q_bytes[idx_indirect];
-	// 	if(qm * Hm <= qnm * Hnm){
-	// 		return false;
-	// 	}
-	// 	else{
-	// 		return true;
-	// 	}
-	// }
-	// else{
-	// 	// int 
-	// 	// int qvm = 
-
-	// }
+	int idx_direct = GetOutDev(p, ch);
+	int idx_indirect = GetOutDevVir(p, ch, v_dip);
+	int Hm = GetHopCount(ch.sip, dip) - 1;
+	int Hnm = GetHopCount(ch.sip, v_dip) - 2 + GetHopCount(v_dip, dip) - 1;
+	if (idx_direct != idx_indirect){
+		int qm = output_q_bytes[idx_direct];
+		int qnm = output_q_bytes[idx_indirect];
+		if(qm * Hm <= qnm * Hnm){
+			return false;
+		}
+	}
+	else{
+		int qm_vc = output_vq_bytes[idx_direct][0];
+		int qnm_vc = output_vq_bytes[idx_direct][1]; //参看dragonfly论文
+		if(qm_vc * Hm <= qnm_vc * Hnm){
+			return false;
+		}
+	}
 	return true;
 }
 
@@ -259,6 +258,7 @@ void SwitchNode::SendToDev(Ptr<Packet>p, CustomHeader &ch){
 	// std::cout << "🐶 " << std::endl;
 	VLBTag v;
 	bool first_time_to_switch = !(p->PeekPacketTag(v));
+	int which_vq = 0;
 	// if(first_time_to_switch == true){
 	// 	// this is a packet from NIC, add tag
 	// 	uint32_t tag_to_enc = (credit << 16) | v_dip;
@@ -292,6 +292,7 @@ void SwitchNode::SendToDev(Ptr<Packet>p, CustomHeader &ch){
 			}
 			else{
 				// 转发，将vlb tag置为1或0，按照虚拟地址发
+				which_vq = 1;
 				
 				idx = GetOutDevVir(p, ch, v_dip_ipv4);
 				actual_dip = v_dip;
@@ -304,7 +305,7 @@ void SwitchNode::SendToDev(Ptr<Packet>p, CustomHeader &ch){
 				cout << "👹send indirectly ";
 			}
 			cout << ", idx: " << idx << endl;
-			uint32_t tag_to_enc = (credit << 16) | v_dip;
+			uint32_t tag_to_enc = ((which_vq << 1 + credit) << 16) | v_dip;
 			// cout << "credit: " << credit << endl;
 			p->AddPacketTag(VLBTag(tag_to_enc));
 		}
@@ -312,19 +313,20 @@ void SwitchNode::SendToDev(Ptr<Packet>p, CustomHeader &ch){
 			// 解析VLBTag
 			uint32_t tag = v.GetVLB();
 			// cout << "tag: " << hex << (tag) << endl;
-			uint32_t resolved_credit = (tag >> 16) & 0xffff;
+			uint32_t resolved_credit = (tag >> 16) & 1;
 			// cout << "resolved_credit: " << hex << resolved_credit << endl;
 			uint32_t resolved_v_dip = tag & 0xffff;
 			uint32_t resolved_v_dip_ipv4 = 0x0b000001 + (((resolved_v_dip) / 256) * 0x00010000) + (((resolved_v_dip) % 256) * 0x00000100);
 			// resolved_v_dip = 0x0b000001 + (((resolved_v_dip) / 256) * 0x00010000) + (((resolved_v_dip) % 256) * 0x00000100);
 			if (int(resolved_credit) != 0) { // credit为1，位于Ra，按照虚拟地址发，再将credit置为1
+				which_vq = 1;
 				idx = GetOutDevVir(p, ch, resolved_v_dip_ipv4);
 				actual_dip = resolved_v_dip;
 				resolved_credit = 0;
 				// v.SetVLB(0);
 				// 删除这个tag，重新添加
 				p->RemovePacketTag(v);
-				uint32_t tag_to_enc = (resolved_credit << 16) | resolved_v_dip;
+				uint32_t tag_to_enc = ((which_vq << 1 + resolved_credit) << 16) | resolved_v_dip;
 				p->AddPacketTag(VLBTag(tag_to_enc));
 				cout << "👹send indirectly, idx: " << idx << endl;
 			}
@@ -392,6 +394,7 @@ void SwitchNode::SendToDev(Ptr<Packet>p, CustomHeader &ch){
 		}
 		m_bytes[inDev][idx][qIndex] += p->GetSize();
 		output_q_bytes[idx] += p->GetSize();
+		output_vq_bytes[idx][which_vq] += p->GetSize();
 		// if (idx > p_df){
 		// 	int next_idx = 
 		// 	output_vq_bytes[idx][] += p->GetSize();
@@ -468,6 +471,15 @@ void SwitchNode::SwitchNotifyDequeue(uint32_t ifIndex, uint32_t qIndex, Ptr<Pack
 		m_mmu->RemoveFromEgressAdmission(ifIndex, qIndex, p->GetSize());
 		m_bytes[inDev][ifIndex][qIndex] -= p->GetSize();
 		output_q_bytes[ifIndex] -= p->GetSize();
+		VLBTag v;
+		p->PeekPacketTag(v);
+		uint32_t resolved_tag = v.GetVLB();
+		int which_vq = (resolved_tag >> 17) & 1;
+		output_vq_bytes[ifIndex][which_vq] -= p->GetSize();
+		// 将tag中的which_vq置为0
+		p->RemovePacketTag(v);
+		uint32_t tag_to_enc = (resolved_tag & 0xfffdffff);
+		p->AddPacketTag(VLBTag(tag_to_enc));
 		if (m_ecnEnabled){
 			bool egressCongested = m_mmu->ShouldSendCN(ifIndex, qIndex);
 			if (egressCongested){
